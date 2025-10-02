@@ -64,6 +64,12 @@ BrowserWindow::BrowserWindow(WebView::CookieJar& cookie_jar, Vector<URL::URL> co
     set_icon(app_icon.bitmap_for_size(16));
     set_title("Browser");
 
+    // Check for kiosk mode
+    if (Browser::g_start_in_fullscreen) {
+        set_fullscreen(true);
+        set_resizable(false);
+    }
+
     auto widget = set_main_widget<GUI::Widget>();
     widget->load_from_gml(browser_window_gml).release_value_but_fixme_should_propagate_errors();
 
@@ -216,6 +222,14 @@ void BrowserWindow::build_menus(StringView const man_file)
     m_go_home_action->set_status_tip("Go to home page"_string);
     m_reload_action = GUI::CommonActions::make_reload_action([this](auto&) { active_tab().reload(); }, this);
     m_reload_action->set_status_tip("Reload current page"_string);
+
+    // Disable navigation in kiosk mode
+    if (Browser::g_disable_navigation) {
+        m_go_back_action->set_enabled(false);
+        m_go_forward_action->set_enabled(false);
+        m_go_home_action->set_enabled(false);
+        m_reload_action->set_enabled(false);
+    }
 
     auto go_menu = add_menu("&Go"_string);
     go_menu->add_action(*m_go_back_action);
@@ -556,7 +570,12 @@ Tab& BrowserWindow::create_new_tab(URL::URL const& url, Web::HTML::ActivateTab a
 {
     auto& new_tab = m_tab_widget->add_tab<Browser::Tab>("New tab"_string, *this);
 
-    m_tab_widget->set_bar_visible(!is_fullscreen() && m_tab_widget->children().size() > 1);
+    // Hide tab bar in kiosk mode
+    if (Browser::g_kiosk_mode) {
+        m_tab_widget->set_bar_visible(false);
+    } else {
+        m_tab_widget->set_bar_visible(!is_fullscreen() && m_tab_widget->children().size() > 1);
+    }
     m_tab_widget->set_tab_icon(new_tab, new_tab.icon());
 
     new_tab.on_title_change = [this, &new_tab](auto& title) {

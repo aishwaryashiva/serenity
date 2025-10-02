@@ -23,5 +23,8 @@ extern Vector<ByteString> g_proxies;
 extern HashMap<ByteString, size_t> g_proxy_mappings;
 extern IconBag g_icon_bag;
 extern ByteString g_webdriver_content_ipc_path;
+extern bool g_start_in_fullscreen;
+extern bool g_kiosk_mode;
+extern bool g_disable_navigation;
 
 }
