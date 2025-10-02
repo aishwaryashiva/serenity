@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "MessageHandler.h"
+#include "NetworkDetector.h"
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
 #include <LibGUI/Application.h>
@@ -14,13 +16,54 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     ByteString target_url = "https://example.com";
     bool kiosk_mode = true;
+    bool enable_message_handler = true;
+    bool check_connectivity = true;
     
     Core::ArgsParser args_parser;
     args_parser.add_option(target_url, "URL to load in fullscreen", "url", 'u', "url");
     args_parser.add_option(kiosk_mode, "Enable kiosk mode (disable navigation)", "kiosk", 'k');
+    args_parser.add_option(enable_message_handler, "Enable message handler for system commands", "messages", 'm');
+    args_parser.add_option(check_connectivity, "Check network connectivity before loading URL", "check-network", 'n');
     args_parser.parse(arguments);
 
-    TRY(Core::System::pledge("stdio recvfd sendfd rpath exec proc"));
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath exec proc unix"));
+    
+    // Check network connectivity if enabled
+    if (check_connectivity) {
+        auto network_detector = make<WebDesktop::NetworkDetector>();
+        TRY(network_detector->start());
+        
+        // Check internet connectivity
+        TRY(network_detector->check_internet_connectivity());
+        auto internet_status = network_detector->get_internet_status();
+        
+        if (internet_status == WebDesktop::NetworkStatus::NoInternet || 
+            internet_status == WebDesktop::NetworkStatus::Disconnected) {
+            // No internet connection, show offline error page
+            target_url = "file:///usr/share/webdesktop/OfflineErrorPage.html";
+            dbgln("No internet connection detected, showing offline error page");
+        }
+        
+        network_detector->stop();
+    }
+    
+    // Start message handler if enabled
+    if (enable_message_handler) {
+        auto message_handler = make<WebDesktop::MessageHandler>();
+        TRY(message_handler->start());
+        
+        // Keep message handler running in background
+        auto message_handler_thread = Threading::BackgroundAction<ErrorOr<void>>::create(
+            [message_handler = move(message_handler)]() -> ErrorOr<void> {
+                // Keep the message handler running
+                while (true) {
+                    sleep(1);
+                }
+                return {};
+            });
+        
+        message_handler_thread->start();
+    }
     
     // Launch browser in fullscreen kiosk mode
     Vector<ByteString> browser_args = {

@@ -10,6 +10,9 @@
 7. [Executable File Formats](#executable-file-formats)
 8. [C++ Compilation Process](#c-compilation-process)
 9. [Web Desktop Implementation](#web-desktop-implementation)
+10. [WebDesktop PostMessage System](#webdesktop-postmessage-system)
+11. [Offline Functionality and Network Troubleshooting](#offline-functionality-and-network-troubleshooting)
+12. [Building and Creating ISO](#building-and-creating-iso)
 
 ---
 
@@ -1689,6 +1692,927 @@ To test the implementation:
 
 ---
 
+## WebDesktop PostMessage System
+
+### Overview
+The WebDesktop PostMessage system enables web pages to send system commands to SerenityOS through a secure message passing system, allowing web-based control of system functions like shutdown, restart, volume control, and network management.
+
+### Architecture
+
+```
+Web Page (JavaScript) 
+    ↓ postMessage
+Browser Tab
+    ↓ Local Socket
+WebDesktop MessageHandler
+    ↓ System Commands
+SerenityOS System
+```
+
+### Key Components
+
+#### 1. MessageHandler Service
+- **File**: `Userland/Services/WebDesktop/MessageHandler.h/cpp`
+- **Purpose**: Listens on `/tmp/webdesktop-messages` socket for incoming commands
+- **Features**: 
+  - JSON message parsing and validation
+  - Origin validation and authentication
+  - System command execution
+  - Network detection integration
+
+#### 2. WebDesktopMessageClient
+- **File**: `Userland/Services/WebDesktop/WebDesktopMessageClient.h/cpp`
+- **Purpose**: Client library for sending messages to the handler
+- **Features**:
+  - Socket communication with message handler
+  - Command-specific methods
+  - Error handling and reconnection
+
+#### 3. WebDesktopConfig
+- **File**: `Userland/Services/WebDesktop/WebDesktopConfig.h/cpp`
+- **Purpose**: Configuration management for security and system settings
+- **Features**:
+  - JSON-based configuration
+  - Security policy management
+  - Command permissions
+  - Authentication settings
+
+### Supported System Commands
+
+#### Power Management
+- `shutdown` - Shutdown the system
+- `restart` - Restart the system
+- `logout` - Logout current user
+- `lock` - Lock the screen
+- `suspend` - Suspend the system
+- `hibernate` - Hibernate the system
+
+#### Media Control
+- `volumeUp` - Increase volume
+- `volumeDown` - Decrease volume
+- `volumeMute` - Toggle mute
+
+#### Display Control
+- `brightnessUp` - Increase brightness
+- `brightnessDown` - Decrease brightness
+
+#### System Functions
+- `screenshot` - Take a screenshot
+- `configureNetwork` - Configure network settings
+- `resetNetwork` - Reset network to defaults
+- `restartNetwork` - Restart network services
+- `openLocalApp` - Launch local application
+- `openSystemInfo` - Show system information
+- `openLogs` - View system logs
+- `contactSupport` - Access support
+
+### Security Features
+
+#### Origin Validation
+- Only allows commands from configured origins
+- Requires HTTPS by default (configurable)
+- Supports localhost for development
+- Wildcard support for specific use cases
+
+#### Authentication
+- Optional token-based authentication
+- Configurable per installation
+- Token passed in message data
+- Secure token validation
+
+#### Command Filtering
+- Whitelist-based command filtering
+- System-level permissions
+- Rate limiting support
+- Blocked command lists
+
+### Configuration
+
+#### Security Settings
+```json
+{
+  "security": {
+    "allowedOrigins": [
+      "https://localhost",
+      "https://127.0.0.1",
+      "https://example.com"
+    ],
+    "requireHttps": true,
+    "allowLocalhost": true,
+    "allowFileProtocol": false,
+    "requireAuthentication": false,
+    "authenticationToken": "",
+    "blockedCommands": []
+  }
+}
+```
+
+#### System Settings
+```json
+{
+  "system": {
+    "enableShutdown": true,
+    "enableRestart": true,
+    "enableLogout": true,
+    "enableLock": true,
+    "enableSuspend": false,
+    "enableHibernate": false,
+    "enableVolumeControl": true,
+    "enableBrightnessControl": true,
+    "enableScreenshot": true,
+    "maxCommandsPerMinute": 10,
+    "commandTimeoutSeconds": 30
+  }
+}
+```
+
+### Usage Example
+
+#### From JavaScript
+```javascript
+// Send a shutdown command
+const message = {
+    command: "shutdown",
+    data: {
+        authToken: "your-token-here" // if authentication is enabled
+    },
+    origin: window.location.origin,
+    targetOrigin: "*"
+};
+
+// Send via postMessage to parent window or WebSocket
+window.postMessage(message, "*");
+```
+
+#### Message Format
+```json
+{
+  "command": "configureNetwork",
+  "data": {
+    "interface": "eth0",
+    "ipAddress": "192.168.1.100",
+    "subnetMask": "255.255.255.0",
+    "gateway": "192.168.1.1",
+    "dnsServers": "8.8.8.8,8.8.4.4"
+  },
+  "origin": "https://example.com",
+  "targetOrigin": "*"
+}
+```
+
+### Browser Integration
+
+#### Tab Modifications
+- **File**: `Userland/Applications/Browser/Tab.h/cpp`
+- **Changes**: Added WebDesktop message client integration
+- **Features**:
+  - Automatic connection in kiosk mode
+  - Message forwarding from web content
+  - Error handling and logging
+
+#### Kiosk Mode Support
+- Enhanced browser with `--fullscreen`, `--kiosk`, and `--disable-navigation` flags
+- UI hiding in kiosk mode (toolbar, status bar, tab bar)
+- Navigation control disabling
+- Fullscreen enforcement
+
+### Implementation Details
+
+#### Socket Communication
+- Uses Unix domain sockets for local communication
+- JSON message format for structured data
+- Error handling and reconnection logic
+- Thread-safe message processing
+
+#### Command Execution
+- System command validation and sanitization
+- Process execution with proper error handling
+- Fallback mechanisms for different system configurations
+- Logging and audit trail
+
+#### Network Integration
+- Integrated with NetworkDetector for network status
+- Network configuration commands
+- Network troubleshooting tools
+- Recovery detection and notification
+
+---
+
+## Offline Functionality and Network Troubleshooting
+
+### Overview
+When WebDesktop detects no internet connection, it automatically switches to a local offline error page that provides network troubleshooting tools, system access, and recovery assistance.
+
+### Architecture
+
+#### Network Detection Flow
+```
+WebDesktop Startup → NetworkDetector → Connectivity Tests → Status Evaluation → Page Selection
+```
+
+#### Offline Recovery Flow
+```
+Offline Page → Continuous Monitoring → Network Recovery Detection → User Notification → Retry Option
+```
+
+### Key Components
+
+#### 1. NetworkDetector
+- **File**: `Userland/Services/WebDesktop/NetworkDetector.h/cpp`
+- **Purpose**: Monitors network connectivity and provides network information
+- **Features**:
+  - Internet connectivity testing
+  - Local network status monitoring
+  - DNS resolution testing
+  - Network interface information
+  - Signal strength monitoring (WiFi)
+  - Periodic status updates
+
+#### 2. OfflineErrorPage
+- **File**: `Userland/Services/WebDesktop/OfflineErrorPage.html`
+- **Purpose**: Local HTML page with troubleshooting interface
+- **Features**:
+  - Real-time network status display
+  - Troubleshooting tools
+  - Network configuration interface
+  - System access options
+  - Recovery detection
+
+#### 3. Enhanced MessageHandler
+- **Integration**: Network management commands
+- **Features**:
+  - Network configuration commands
+  - System access commands
+  - Network troubleshooting tools
+  - Recovery assistance
+
+### Network Detection Details
+
+#### Connectivity Tests
+1. **Internet Test** - Attempts to connect to `https://httpbin.org/status/200`
+2. **Local Network Test** - Checks local network interface status
+3. **DNS Test** - Tries to resolve `google.com`
+4. **Service Test** - Verifies WebDesktop message handler is running
+
+#### Network Information Collected
+- **Interface Name** - Network interface (eth0, wlan0, etc.)
+- **IP Address** - Current IP address
+- **Gateway** - Network gateway
+- **DNS Servers** - Configured DNS servers
+- **MAC Address** - Network interface MAC address
+- **Signal Strength** - WiFi signal strength (if applicable)
+- **Connection Type** - Wired or wireless
+
+#### Status Monitoring
+- **Periodic Checks** - Every 30 seconds
+- **Real-time Updates** - Status change notifications
+- **Recovery Detection** - Automatic detection when connection is restored
+- **Visual Indicators** - Green/Red/Yellow status indicators
+
+### Offline Error Page Features
+
+#### Network Status Display
+- Real-time status of internet, local network, DNS, and WebDesktop service
+- Visual indicators (green/red/yellow) for connection status
+- Detailed information about network configuration
+- Progress bars and countdown timers
+
+#### Troubleshooting Tools
+- **Retry Connection** - Manually retry network connection
+- **Network Settings** - Configure IP, gateway, DNS servers
+- **Restart Network** - Restart network services
+- **System Information** - View system and network details
+- **Advanced Settings** - Detailed network configuration
+
+#### System Access
+- **Local Apps** - Launch local applications
+- **System Logs** - View system and network logs
+- **Support** - Access support information
+- **System Control** - Shutdown, restart, logout, lock
+
+#### Network Configuration Interface
+- **Interface Selection** - Choose network interface
+- **IP Configuration** - Set IP address and subnet mask
+- **Gateway Settings** - Configure default gateway
+- **DNS Configuration** - Set DNS servers
+- **Proxy Settings** - Configure proxy if needed
+
+### Implementation Details
+
+#### Automatic Fallback
+```cpp
+// Check network connectivity if enabled
+if (check_connectivity) {
+    auto network_detector = make<WebDesktop::NetworkDetector>();
+    TRY(network_detector->start());
+    
+    // Check internet connectivity
+    TRY(network_detector->check_internet_connectivity());
+    auto internet_status = network_detector->get_internet_status();
+    
+    if (internet_status == WebDesktop::NetworkStatus::NoInternet || 
+        internet_status == WebDesktop::NetworkStatus::Disconnected) {
+        // No internet connection, show offline error page
+        target_url = "file:///usr/share/webdesktop/OfflineErrorPage.html";
+        dbgln("No internet connection detected, showing offline error page");
+    }
+    
+    network_detector->stop();
+}
+```
+
+#### Network Status Monitoring
+```cpp
+void NetworkDetector::start_periodic_checks()
+{
+    if (m_periodic_timer) {
+        m_periodic_timer->start();
+    }
+}
+
+// Periodic checks every 30 seconds
+m_periodic_timer = Core::Timer::create_repeating(30000, [this] {
+    check_internet_connectivity();
+    check_local_network();
+    update_network_info();
+});
+```
+
+#### Message Handling for Network Commands
+```cpp
+ErrorOr<void> MessageHandler::configure_network(JsonObject const& data)
+{
+    auto interface = data.get_byte_string("interface"sv).value_or("eth0"sv);
+    auto ip_address = data.get_byte_string("ipAddress"sv).value_or(""sv);
+    auto subnet_mask = data.get_byte_string("subnetMask"sv).value_or(""sv);
+    auto gateway = data.get_byte_string("gateway"sv).value_or(""sv);
+    auto dns_servers = data.get_byte_string("dnsServers"sv).value_or(""sv);
+    
+    if (m_network_detector) {
+        return m_network_detector->configure_network(interface, ip_address, subnet_mask, gateway, dns_servers);
+    }
+    
+    return Error::from_string_literal("Network detector not available");
+}
+```
+
+### Configuration
+
+#### Command Line Options
+```bash
+# Enable network checking (default: true)
+/bin/WebDesktop --check-network
+
+# Disable network checking
+/bin/WebDesktop --no-check-network
+
+# Specify custom URL
+/bin/WebDesktop --url https://your-app.com --check-network
+
+# Enable message handler for offline functionality
+/bin/WebDesktop --messages --check-network
+```
+
+#### Configuration File
+```json
+{
+  "security": {
+    "allowedOrigins": [
+      "file:///usr/share/webdesktop/OfflineErrorPage.html"
+    ],
+    "requireHttps": false,
+    "allowFileProtocol": true
+  },
+  "system": {
+    "enableNetworkManagement": true,
+    "enableSystemInfo": true,
+    "enableLogs": true
+  }
+}
+```
+
+### Testing
+
+#### Automated Test Suite
+- **File**: `Userland/Services/WebDesktop/test_offline.sh`
+- **Coverage**:
+  - Normal operation with internet
+  - Offline operation detection
+  - Network recovery
+  - Local error page loading
+  - Network configuration
+  - System commands
+  - Network troubleshooting
+
+#### Manual Testing
+1. **Disconnect network** - Unplug ethernet cable or disable WiFi
+2. **Start WebDesktop** - Run `/bin/WebDesktop --check-network`
+3. **Observe offline page** - Should show network error page
+4. **Test functionality** - Try troubleshooting tools
+5. **Reconnect network** - Should automatically detect recovery
+
+### File Structure
+```
+/usr/share/webdesktop/
+├── OfflineErrorPage.html          # Offline error page
+└── test_offline.sh               # Test suite
+
+/etc/
+└── webdesktop.conf               # Configuration file
+
+/tmp/
+└── webdesktop-messages           # Message handler socket
+```
+
+### Benefits
+1. **No Blank Screen** - Users always see a functional interface
+2. **Built-in Troubleshooting** - Network diagnostic tools available
+3. **Automatic Recovery** - Detects when connection is restored
+4. **System Access** - Local applications and system functions available
+5. **Network Configuration** - Ability to configure network settings
+6. **Real-time Monitoring** - Continuous network status updates
+7. **Secure Operation** - All commands properly validated
+8. **Easy Testing** - Comprehensive test suite for validation
+
+---
+
+## Building and Creating ISO
+
+### Prerequisites
+
+#### System Requirements
+- **Operating System**: Linux (Ubuntu 20.04+ recommended)
+- **RAM**: Minimum 8GB, recommended 16GB
+- **Storage**: Minimum 50GB free space
+- **CPU**: Multi-core processor (4+ cores recommended)
+- **Internet**: Required for downloading dependencies
+
+#### Required Tools
+```bash
+# Install build dependencies
+sudo apt update
+sudo apt install -y \
+    build-essential \
+    cmake \
+    ninja-build \
+    ccache \
+    git \
+    curl \
+    wget \
+    python3 \
+    python3-pip \
+    qemu-system-x86 \
+    qemu-utils \
+    genisoimage \
+    xorriso \
+    mtools \
+    dosfstools \
+    gparted \
+    parted
+```
+
+### Step 1: Clone and Setup
+
+#### Clone Repository
+```bash
+# Clone SerenityOS repository
+git clone https://github.com/SerenityOS/serenity.git
+cd serenity
+
+# Checkout latest stable version (optional)
+git checkout master
+```
+
+#### Setup Build Environment
+```bash
+# Create build directory
+mkdir -p Build
+cd Build
+
+# Configure CMake
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release ..
+
+# Verify configuration
+cmake --build . --target help | head -20
+```
+
+### Step 2: Build the System
+
+#### Build All Components
+```bash
+# Build entire system (this takes 2-4 hours)
+ninja
+
+# Or build specific components
+ninja Kernel
+ninja Userland
+ninja Base
+```
+
+#### Build with Custom Options
+```bash
+# Build with debug symbols
+cmake -GNinja -DCMAKE_BUILD_TYPE=Debug ..
+ninja
+
+# Build with specific architecture
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DSERENITY_ARCH=x86_64 ..
+ninja
+
+# Build with optimizations
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native" ..
+ninja
+```
+
+#### Verify Build
+```bash
+# Check build artifacts
+ls -la Root/
+ls -la Kernel/Kernel
+
+# Test in QEMU
+ninja run
+```
+
+### Step 3: Create Base Image
+
+#### Create Disk Image
+```bash
+# Create raw disk image (2GB)
+qemu-img create -f raw serenity.img 2G
+
+# Create partition table
+parted serenity.img mklabel msdos
+parted serenity.img mkpart primary ext2 1MiB 100%
+
+# Format partition
+sudo losetup -P /dev/loop0 serenity.img
+sudo mkfs.ext2 /dev/loop0p1
+sudo mount /dev/loop0p1 /mnt
+```
+
+#### Install System
+```bash
+# Copy system files
+sudo cp -r Root/* /mnt/
+sudo cp Kernel/Kernel /mnt/boot/
+
+# Install bootloader
+sudo grub-install --target=i386-pc --boot-directory=/mnt/boot /dev/loop0
+
+# Create GRUB configuration
+sudo tee /mnt/boot/grub/grub.cfg > /dev/null << 'EOF'
+set timeout=5
+set default=0
+
+menuentry "SerenityOS" {
+    set root=(hd0,1)
+    linux /boot/Kernel
+    initrd /boot/initrd
+}
+EOF
+
+# Unmount
+sudo umount /mnt
+sudo losetup -d /dev/loop0
+```
+
+### Step 4: Create ISO Image
+
+#### Method 1: Using genisoimage
+```bash
+# Create ISO directory structure
+mkdir -p iso/boot/grub
+cp serenity.img iso/
+cp Kernel/Kernel iso/boot/
+
+# Create GRUB configuration for ISO
+cat > iso/boot/grub/grub.cfg << 'EOF'
+set timeout=5
+set default=0
+
+menuentry "SerenityOS" {
+    set root=(cd0)
+    linux /boot/Kernel
+    initrd /boot/initrd
+}
+
+menuentry "SerenityOS (Safe Mode)" {
+    set root=(cd0)
+    linux /boot/Kernel --safe-mode
+    initrd /boot/initrd
+}
+EOF
+
+# Create ISO
+genisoimage -R -b boot/grub/stage2_eltorito -no-emul-boot \
+    -boot-load-size 4 -boot-info-table -o serenity.iso iso/
+```
+
+#### Method 2: Using xorriso (Recommended)
+```bash
+# Create ISO with xorriso
+xorriso -as mkisofs \
+    -R -J -c boot/boot.catalog \
+    -b boot/grub/stage2_eltorito \
+    -no-emul-boot -boot-load-size 4 -boot-info-table \
+    -eltorito-alt-boot -e boot/grub/efiboot.img -no-emul-boot \
+    -isohybrid-gpt-basdat \
+    -V "SerenityOS" \
+    -o serenity.iso \
+    iso/
+```
+
+#### Method 3: Using Meta Scripts
+```bash
+# Use SerenityOS build scripts
+cd Meta
+
+# Build QEMU image
+./build-image-qemu.sh
+
+# Build GRUB image
+./build-image-grub.sh
+
+# Build UEFI image
+./build-image-uefi.sh
+
+# Build Raspberry Pi image
+./build-image-raspberry-pi.sh
+```
+
+### Step 5: Advanced ISO Creation
+
+#### UEFI Bootable ISO
+```bash
+# Create UEFI bootable ISO
+mkdir -p efi-iso/EFI/BOOT
+cp Kernel/Kernel efi-iso/
+cp Root/initrd efi-iso/
+
+# Create UEFI bootloader
+cat > efi-iso/EFI/BOOT/BOOTX64.EFI << 'EOF'
+# UEFI bootloader binary (requires UEFI development)
+EOF
+
+# Create UEFI ISO
+xorriso -as mkisofs \
+    -R -J -c boot/boot.catalog \
+    -b boot/grub/stage2_eltorito \
+    -no-emul-boot -boot-load-size 4 -boot-info-table \
+    -eltorito-alt-boot -e EFI/BOOT/BOOTX64.EFI -no-emul-boot \
+    -isohybrid-gpt-basdat \
+    -V "SerenityOS UEFI" \
+    -o serenity-uefi.iso \
+    efi-iso/
+```
+
+#### Hybrid ISO (BIOS + UEFI)
+```bash
+# Create hybrid ISO supporting both BIOS and UEFI
+xorriso -as mkisofs \
+    -R -J -c boot/boot.catalog \
+    -b boot/grub/stage2_eltorito \
+    -no-emul-boot -boot-load-size 4 -boot-info-table \
+    -eltorito-alt-boot -e EFI/BOOT/BOOTX64.EFI -no-emul-boot \
+    -isohybrid-gpt-basdat \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+    -V "SerenityOS Hybrid" \
+    -o serenity-hybrid.iso \
+    hybrid-iso/
+```
+
+### Step 6: Testing and Validation
+
+#### Test in QEMU
+```bash
+# Test BIOS boot
+qemu-system-x86_64 -cdrom serenity.iso -boot d -m 2G
+
+# Test UEFI boot
+qemu-system-x86_64 -cdrom serenity-uefi.iso -boot d -m 2G -bios /usr/share/ovmf/OVMF.fd
+
+# Test with different configurations
+qemu-system-x86_64 -cdrom serenity.iso -boot d -m 4G -smp 4 -enable-kvm
+```
+
+#### Test on Real Hardware
+```bash
+# Create bootable USB
+sudo dd if=serenity.iso of=/dev/sdX bs=4M status=progress
+
+# Or use tools like Rufus, Etcher, or Ventoy
+```
+
+#### Validate ISO
+```bash
+# Check ISO structure
+file serenity.iso
+isoinfo -l -i serenity.iso
+
+# Verify boot sectors
+hexdump -C serenity.iso | head -20
+```
+
+### Step 7: Customization
+
+#### Custom Kernel Configuration
+```bash
+# Edit kernel configuration
+vim Kernel/CMakeLists.txt
+
+# Add custom kernel options
+set(KERNEL_CMDLINE "console=ttyS0,115200 root=/dev/sda1")
+
+# Rebuild kernel
+ninja Kernel
+```
+
+#### Custom Userland Applications
+```bash
+# Add custom application
+mkdir -p Userland/Applications/MyApp
+cat > Userland/Applications/MyApp/CMakeLists.txt << 'EOF'
+serenity_component(
+    MyApp
+    REQUIRED
+    TARGETS MyApp
+)
+
+set(SOURCES
+    main.cpp
+)
+
+serenity_app(MyApp)
+target_link_libraries(MyApp PRIVATE LibCore LibGUI LibMain)
+EOF
+
+# Rebuild userland
+ninja Userland
+```
+
+#### Custom Base System
+```bash
+# Modify base system
+vim Base/etc/SystemServer.ini
+
+# Add custom services
+[MyService]
+Executable=/bin/MyService
+Arguments=--daemon
+User=root
+SystemModes=graphical
+KeepAlive=true
+
+# Rebuild base
+ninja Base
+```
+
+### Step 8: Distribution
+
+#### Create Release Package
+```bash
+# Create release directory
+mkdir -p release
+
+# Copy ISO and documentation
+cp serenity.iso release/
+cp serenity-uefi.iso release/
+cp README.md release/
+cp CHANGELOG.md release/
+
+# Create checksums
+cd release
+sha256sum *.iso > checksums.txt
+md5sum *.iso >> checksums.txt
+
+# Create archive
+tar -czf serenity-release.tar.gz *
+```
+
+#### Automated Build Script
+```bash
+#!/bin/bash
+# build-iso.sh
+
+set -e
+
+echo "🦋 Building SerenityOS ISO"
+
+# Clean previous builds
+rm -rf Build iso release
+mkdir -p Build iso release
+
+# Build system
+cd Build
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release ..
+ninja
+
+# Create ISO
+cd ..
+./create-iso.sh
+
+# Test ISO
+qemu-system-x86_64 -cdrom serenity.iso -boot d -m 2G -nographic
+
+echo "✅ ISO created successfully: serenity.iso"
+```
+
+### Troubleshooting
+
+#### Common Build Issues
+```bash
+# Out of memory during build
+export MAKEFLAGS="-j$(nproc --all)"
+ninja -j$(nproc --all)
+
+# Disk space issues
+df -h
+sudo apt clean
+docker system prune -a
+
+# Dependency issues
+sudo apt update
+sudo apt install -y build-essential cmake ninja-build
+```
+
+#### ISO Boot Issues
+```bash
+# Check ISO integrity
+file serenity.iso
+isoinfo -l -i serenity.iso
+
+# Verify boot sectors
+hexdump -C serenity.iso | head -20
+
+# Test with different QEMU options
+qemu-system-x86_64 -cdrom serenity.iso -boot d -m 2G -serial stdio
+```
+
+#### Hardware Compatibility
+```bash
+# Check hardware support
+lspci -nn
+lsusb
+lscpu
+
+# Test with different hardware configurations
+qemu-system-x86_64 -cdrom serenity.iso -boot d -m 2G -cpu host
+```
+
+### Performance Optimization
+
+#### Build Optimization
+```bash
+# Use ccache for faster builds
+export CCACHE_DIR=/tmp/ccache
+export PATH="/usr/lib/ccache:$PATH"
+
+# Parallel builds
+export MAKEFLAGS="-j$(nproc --all)"
+ninja -j$(nproc --all)
+
+# Use tmpfs for build directory
+sudo mount -t tmpfs -o size=8G tmpfs Build/
+```
+
+#### ISO Optimization
+```bash
+# Compress ISO
+gzip -9 serenity.iso
+
+# Create compressed ISO
+xorriso -as mkisofs \
+    -R -J -c boot/boot.catalog \
+    -b boot/grub/stage2_eltorito \
+    -no-emul-boot -boot-load-size 4 -boot-info-table \
+    -V "SerenityOS" \
+    -o serenity.iso \
+    iso/ | gzip -9 > serenity.iso.gz
+```
+
+### Final Notes
+
+#### Build Time Estimates
+- **Full Build**: 2-4 hours (depending on hardware)
+- **Kernel Only**: 10-20 minutes
+- **Userland Only**: 30-60 minutes
+- **ISO Creation**: 5-10 minutes
+
+#### Disk Space Requirements
+- **Source Code**: ~2GB
+- **Build Directory**: ~8-12GB
+- **ISO Image**: ~500MB-2GB
+- **Total**: ~15-20GB
+
+#### Hardware Recommendations
+- **CPU**: 8+ cores for faster builds
+- **RAM**: 16GB+ for parallel builds
+- **Storage**: SSD recommended for faster I/O
+- **Network**: Stable internet for dependencies
+
+---
+
 ## Summary
 
 ### Key Findings
@@ -1711,6 +2635,12 @@ To test the implementation:
 
 9. **Web Desktop**: Complete implementation for replacing traditional desktop with fullscreen web browser experience.
 
+10. **WebDesktop PostMessage System**: Secure message passing system enabling web-based control of system functions with authentication and origin validation.
+
+11. **Offline Functionality**: Comprehensive network troubleshooting and recovery system with automatic fallback to local error page when internet is unavailable.
+
+12. **Build System**: Complete step-by-step guide for building SerenityOS and creating bootable ISO images for various platforms.
+
 ### Recommendations
 
 1. **For Developers**: Use C++ or Jakt for SerenityOS development, avoid .NET Core integration.
@@ -1723,6 +2653,12 @@ To test the implementation:
 
 5. **For Web Desktop**: Use the implemented WebDesktop service for kiosk mode applications and web-based interfaces.
 
+6. **For PostMessage Integration**: Implement secure web-based system control using the WebDesktop PostMessage system with proper authentication and origin validation.
+
+7. **For Offline Scenarios**: Ensure WebDesktop deployments include offline functionality for network troubleshooting and system access during connectivity issues.
+
+8. **For Building**: Follow the comprehensive build guide for creating custom SerenityOS images with specific configurations and optimizations.
+
 ### Conclusion
 
 SerenityOS is a well-designed, modern Unix-like operating system with:
@@ -1731,5 +2667,8 @@ SerenityOS is a well-designed, modern Unix-like operating system with:
 - **Educational value**: Excellent for learning OS concepts
 - **Development potential**: Good foundation for further development
 - **Web desktop capability**: Full implementation for web-based interfaces
+- **Secure messaging system**: PostMessage integration for web-based system control
+- **Offline functionality**: Comprehensive network troubleshooting and recovery
+- **Build system**: Complete toolchain for custom OS images and ISO creation
 
-**Best suited for**: Developers, students, and enthusiasts interested in operating system development and experimentation with compatible hardware.
+**Best suited for**: Developers, students, and enthusiasts interested in operating system development, web-based interfaces, and experimentation with compatible hardware.

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebDesktop System Control</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        
+        .control-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .control-group {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .control-group h3 {
+            margin-top: 0;
+            color: #ffd700;
+        }
+        
+        button {
+            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            margin: 5px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        .danger {
+            background: linear-gradient(45deg, #e74c3c, #c0392b);
+        }
+        
+        .warning {
+            background: linear-gradient(45deg, #f39c12, #e67e22);
+        }
+        
+        .success {
+            background: linear-gradient(45deg, #27ae60, #2ecc71);
+        }
+        
+        .info {
+            background: linear-gradient(45deg, #3498db, #2980b9);
+        }
+        
+        .status {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        .status.success {
+            background: rgba(46, 204, 113, 0.2);
+            border: 1px solid #2ecc71;
+        }
+        
+        .status.error {
+            background: rgba(231, 76, 60, 0.2);
+            border: 1px solid #e74c3c;
+        }
+        
+        .auth-section {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖥️ WebDesktop System Control</h1>
+        
+        <div class="auth-section">
+            <h3>🔐 Authentication (Optional)</h3>
+            <input type="text" id="authToken" placeholder="Enter authentication token (if required)">
+        </div>
+        
+        <div class="control-grid">
+            <div class="control-group">
+                <h3>🔄 System Control</h3>
+                <button class="danger" onclick="sendCommand('shutdown')">Shutdown</button>
+                <button class="danger" onclick="sendCommand('restart')">Restart</button>
+                <button class="warning" onclick="sendCommand('logout')">Logout</button>
+                <button class="info" onclick="sendCommand('lock')">Lock Screen</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>💤 Power Management</h3>
+                <button class="info" onclick="sendCommand('suspend')">Suspend</button>
+                <button class="info" onclick="sendCommand('hibernate')">Hibernate</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>🔊 Volume Control</h3>
+                <button class="success" onclick="sendCommand('volumeUp')">Volume Up</button>
+                <button class="success" onclick="sendCommand('volumeDown')">Volume Down</button>
+                <button class="warning" onclick="sendCommand('volumeMute')">Mute</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>💡 Brightness Control</h3>
+                <button class="success" onclick="sendCommand('brightnessUp')">Brightness Up</button>
+                <button class="success" onclick="sendCommand('brightnessDown')">Brightness Down</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>📸 Screenshot</h3>
+                <button class="info" onclick="sendCommand('screenshot')">Take Screenshot</button>
+            </div>
+        </div>
+        
+        <div id="status" class="status" style="display: none;"></div>
+    </div>
+
+    <script>
+        function sendCommand(command) {
+            const authToken = document.getElementById('authToken').value;
+            const message = {
+                command: command,
+                data: {
+                    authToken: authToken
+                },
+                origin: window.location.origin,
+                targetOrigin: "*"
+            };
+            
+            // Show status
+            const status = document.getElementById('status');
+            status.style.display = 'block';
+            status.textContent = `Sending command: ${command}...`;
+            status.className = 'status';
+            
+            // In a real implementation, this would send the message to the WebDesktop service
+            // For now, we'll simulate the response
+            setTimeout(() => {
+                status.textContent = `Command '${command}' sent successfully!`;
+                status.className = 'status success';
+            }, 1000);
+            
+            console.log('Sending WebDesktop command:', message);
+            
+            // TODO: Implement actual message sending to WebDesktop service
+            // This would typically involve:
+            // 1. Opening a WebSocket connection to the WebDesktop service
+            // 2. Sending the JSON message
+            // 3. Handling the response
+        }
+        
+        // Check if we're in a secure context
+        if (!window.isSecureContext) {
+            document.getElementById('status').style.display = 'block';
+            document.getElementById('status').textContent = 'Warning: This page is not served over HTTPS. Some commands may not work.';
+            document.getElementById('status').className = 'status error';
+        }
+        
+        // Display current origin
+        console.log('Current origin:', window.location.origin);
+        console.log('Protocol:', window.location.protocol);
+        console.log('Host:', window.location.host);
+    </script>
+</body>
+</html>

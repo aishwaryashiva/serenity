@@ -15,6 +15,7 @@
 #include <LibURL/URL.h>
 #include <LibWeb/Forward.h>
 #include <LibWebView/ViewImplementation.h>
+#include <Services/WebDesktop/WebDesktopMessageClient.h>
 
 namespace WebView {
 class OutOfProcessWebView;
@@ -85,6 +86,9 @@ public:
     Gfx::Bitmap const* icon() const { return m_icon; }
 
     WebView::OutOfProcessWebView& view() { return *m_web_content_view; }
+    
+    // WebDesktop message handling
+    void handle_webdesktop_message(ByteString const& message);
 
 private:
     explicit Tab(BrowserWindow&);
@@ -153,6 +157,9 @@ private:
 
     bool m_can_navigate_back { false };
     bool m_can_navigate_forward { false };
+    
+    // WebDesktop message client
+    OwnPtr<WebDesktop::WebDesktopMessageClient> m_webdesktop_client;
 };
 
 }
