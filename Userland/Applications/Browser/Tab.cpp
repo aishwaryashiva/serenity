@@ -885,8 +885,14 @@ void Tab::did_become_active()
     m_toolbar_container->add_child(BookmarksBarWidget::the());
 
     auto is_fullscreen = window().is_fullscreen();
-    m_toolbar_container->set_visible(!is_fullscreen);
-    m_statusbar->set_visible(!is_fullscreen);
+    // Hide UI elements in kiosk mode
+    if (Browser::g_kiosk_mode) {
+        m_toolbar_container->set_visible(false);
+        m_statusbar->set_visible(false);
+    } else {
+        m_toolbar_container->set_visible(!is_fullscreen);
+        m_statusbar->set_visible(!is_fullscreen);
+    }
 
     update_actions();
 }

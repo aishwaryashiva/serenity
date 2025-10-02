@@ -47,6 +47,9 @@ Vector<ByteString> g_proxies;
 HashMap<ByteString, size_t> g_proxy_mappings;
 IconBag g_icon_bag;
 ByteString g_webdriver_content_ipc_path;
+bool g_start_in_fullscreen = false;
+bool g_kiosk_mode = false;
+bool g_disable_navigation = false;
 
 }
 
@@ -139,13 +142,30 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     Vector<ByteString> specified_urls;
     bool new_window = false;
+    bool fullscreen_mode = false;
+    bool kiosk_mode = false;
+    bool disable_navigation = false;
 
     Core::ArgsParser args_parser;
     args_parser.add_positional_argument(specified_urls, "URLs to open", "url", Core::ArgsParser::Required::No);
     args_parser.add_option(Browser::g_webdriver_content_ipc_path, "Path to WebDriver IPC for WebContent", "webdriver-content-path", 0, "path", Core::ArgsParser::OptionHideMode::CommandLineAndMarkdown);
     args_parser.add_option(new_window, "Force opening in a new window", "new-window", 'n');
+    args_parser.add_option(fullscreen_mode, "Start in fullscreen mode", "fullscreen", 'f');
+    args_parser.add_option(kiosk_mode, "Start in kiosk mode", "kiosk", 'k');
+    args_parser.add_option(disable_navigation, "Disable navigation controls", "disable-navigation");
 
     args_parser.parse(arguments);
+
+    // Set global flags for kiosk mode
+    if (fullscreen_mode || kiosk_mode) {
+        Browser::g_start_in_fullscreen = true;
+    }
+    if (kiosk_mode) {
+        Browser::g_kiosk_mode = true;
+    }
+    if (disable_navigation) {
+        Browser::g_disable_navigation = true;
+    }
 
     auto app = TRY(GUI::Application::create(arguments));
     auto const man_file = "/usr/share/man/man1/Applications/Browser.md"sv;

@@ -7,6 +7,9 @@
 4. [.NET Core Support Feasibility](#net-core-support-feasibility)
 5. [Bare Metal Installation](#bare-metal-installation)
 6. [Driver Architecture and Hardware Support](#driver-architecture-and-hardware-support)
+7. [Executable File Formats](#executable-file-formats)
+8. [C++ Compilation Process](#c-compilation-process)
+9. [Web Desktop Implementation](#web-desktop-implementation)
 
 ---
 
@@ -938,5 +941,795 @@ SerenityOS is a well-designed, modern Unix-like operating system with:
 - **Limited hardware support**: Specific drivers for major vendors only
 - **Educational value**: Excellent for learning OS concepts
 - **Development potential**: Good foundation for further development
+
+**Best suited for**: Developers, students, and enthusiasts interested in operating system development and experimentation with compatible hardware.
+
+---
+
+## Executable File Formats
+
+### Overview
+SerenityOS supports **two executable formats**:
+
+### 1. ELF (Primary Format)
+
+#### Supported Architectures
+- **x86_64**: 64-bit Intel/AMD processors
+- **aarch64**: 64-bit ARM processors
+- **riscv64**: 64-bit RISC-V processors
+
+#### ELF Types
+- **ET_EXEC**: Executable files
+- **ET_DYN**: Shared objects (dynamic libraries)
+- **ET_REL**: Relocatable files (object files)
+- **ET_CORE**: Core dump files
+
+#### Features
+- **Dynamic linking**: Support for shared libraries
+- **Program interpreter**: Dynamic loader support
+- **Address space layout randomization (ASLR)**: Security feature
+- **Stack size hints**: Configurable stack sizes
+
+#### Validation
+```cpp
+// From Userland/Libraries/LibELF/Validation.cpp
+bool validate_elf_header(Elf_Ehdr const& elf_header, size_t file_size, bool verbose)
+{
+    if (!IS_ELF(elf_header)) {
+        if (verbose)
+            dbgln("File is not an ELF file.");
+        return false;
+    }
+
+    auto expected_class = ELFCLASS64;
+    auto expected_bitness = 64;
+    if (expected_class != elf_header.e_ident[EI_CLASS]) {
+        if (verbose)
+            dbgln("File is not a {}-bit ELF file.", expected_bitness);
+        return false;
+    }
+
+    if (ELFDATA2LSB != elf_header.e_ident[EI_DATA]) {
+        if (verbose)
+            dbgln("File is not a little endian ELF file.");
+        return false;
+    }
+
+    auto expected_machines = Array { EM_X86_64, EM_AARCH64, EM_RISCV };
+    if (!expected_machines.span().contains_slow(elf_header.e_machine)) {
+        if (verbose)
+            dbgln("File has unknown machine ({}), expected {}!", 
+                  elf_header.e_machine, expected_machines.span());
+        return false;
+    }
+
+    return true;
+}
+```
+
+### 2. Shebang Scripts
+
+#### Format
+- **Header**: `#!/path/to/interpreter [args]`
+- **Examples**: `#!/bin/Shell`, `#!/usr/bin/env python`
+- **Recursion limit**: 2 levels maximum
+- **Buffer limit**: PAGE_SIZE for shebang line
+
+#### Implementation
+```cpp
+// From Kernel/Syscalls/execve.cpp
+static bool is_executable_starting_with_shebang(Span<u8> const& preliminary_buffer)
+{
+    return preliminary_buffer.size() > 2 && 
+           preliminary_buffer[0] == '#' && 
+           preliminary_buffer[1] == '!';
+}
+
+static ErrorOr<Vector<NonnullOwnPtr<KString>>> find_shebang_interpreter_for_executable(Span<u8> const& line_buffer)
+{
+    VERIFY(is_executable_starting_with_shebang(line_buffer));
+    int word_start = 2;
+    size_t word_length = 0;
+    Vector<NonnullOwnPtr<KString>> interpreter_words;
+
+    bool found_line_break = false;
+
+    for (size_t i = 2; i < line_buffer.size(); ++i) {
+        if (line_buffer[i] == '\n') {
+            found_line_break = true;
+            break;
+        }
+
+        if (line_buffer[i] != ' ') {
+            ++word_length;
+        }
+
+        if (line_buffer[i] == ' ') {
+            if (word_length > 0) {
+                auto word = TRY(KString::try_create(StringView { line_buffer.slice(word_start, word_length) }));
+                TRY(interpreter_words.try_append(move(word)));
+            }
+            word_length = 0;
+            word_start = i + 1;
+        }
+    }
+
+    if (!found_line_break)
+        return ENOBUFS;
+
+    if (word_length > 0) {
+        auto word = TRY(KString::try_create(StringView { line_buffer.slice(word_start, word_length) }));
+        TRY(interpreter_words.try_append(move(word)));
+    }
+
+    if (!interpreter_words.is_empty())
+        return interpreter_words;
+
+    return ENOEXEC;
+}
+```
+
+### Execution Flow
+
+#### 1. Shebang Detection
+- Check for `#!` at the beginning of the file
+- If found, parse interpreter and arguments
+- Execute interpreter with script as argument
+
+#### 2. ELF Execution
+- Validate ELF header
+- Load program segments into memory
+- Set up dynamic linker if needed
+- Create stack and auxiliary vector
+- Jump to entry point
+
+#### 3. Program Loading
+```cpp
+// From Kernel/Syscalls/execve.cpp
+ErrorOr<void> Process::exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, int recursion_depth)
+{
+    if (recursion_depth > 2) {
+        dbgln("exec({}): SHENANIGANS! recursed too far trying to find #! interpreter", path);
+        return ELOOP;
+    }
+
+    // Open the file to check what kind of binary format it is
+    // Currently supported formats:
+    //    - #! interpreted file
+    //    - ELF32
+    //        * ET_EXEC binary that just gets loaded
+    //        * ET_DYN binary that requires a program interpreter
+    //
+    auto description = TRY(VirtualFileSystem::open(vfs_root_context(), credentials(), path->view(), O_EXEC, 0, current_directory()));
+    auto metadata = description->metadata();
+
+    if (!metadata.is_regular_file())
+        return EACCES;
+
+    // Always gonna need at least 3 bytes. these are for #!X
+    if (metadata.size < 3)
+        return ENOEXEC;
+
+    VERIFY(description->inode());
+
+    // Read just the size of ELF header of the program into memory so we can start parsing it.
+    // The size of a ELF header should suffice to find the shebang sign (known as #! sign) if the file has it
+    // in the start.
+    auto preliminary_buffer = Array<u8, sizeof(Elf_Ehdr)>::from_repeated_value(0);
+    auto preliminary_read_buffer = UserOrKernelBuffer::for_kernel_buffer(preliminary_buffer.data());
+    auto nread = TRY(description->read(preliminary_read_buffer, 0, preliminary_buffer.span().size()));
+
+    // 1) #! interpreted file
+    if (is_executable_starting_with_shebang(preliminary_buffer)) {
+        // FIXME: PAGE_SIZE seems like enough for specifying an interpreter for now.
+        // We might need to re-evaluate this but to avoid further allocations, this is how it is for now.
+        auto shebang_line_buffer = Array<u8, PAGE_SIZE>::from_repeated_value(0);
+        auto shebang_line_read_buffer = UserOrKernelBuffer::for_kernel_buffer(shebang_line_buffer.data());
+        TRY(description->read(shebang_line_read_buffer, 0, shebang_line_buffer.span().size()));
+        auto shebang_words = TRY(find_shebang_interpreter_for_executable(shebang_line_buffer));
+        auto shebang_path = TRY(shebang_words.first()->try_clone());
+        arguments[0] = move(path);
+        TRY(arguments.try_prepend(move(shebang_words)));
+        return exec(move(shebang_path), move(arguments), move(environment), new_main_thread, previous_interrupts_state, ++recursion_depth);
+    }
+
+    // #2) ELF32 for i386
+
+    if (nread < sizeof(Elf_Ehdr))
+        return ENOEXEC;
+    auto const* main_program_header = bit_cast<Elf_Ehdr const*>(preliminary_buffer.data());
+
+    if (!ELF::validate_elf_header(*main_program_header, metadata.size)) {
+        dbgln("exec({}): File has invalid ELF header", path);
+        return ENOEXEC;
+    }
+
+    Optional<size_t> minimum_stack_size {};
+    auto interpreter_description = TRY(find_elf_interpreter_for_executable(*description, path->view(), *main_program_header, metadata.size, minimum_stack_size));
+    TRY(do_exec(move(description), move(arguments), move(environment), move(interpreter_description), new_main_thread, previous_interrupts_state, *main_program_header, minimum_stack_size));
+
+    return {};
+}
+```
+
+### Not Supported
+- **PE/COFF**: Windows executable format
+- **Mach-O**: macOS executable format
+- **a.out**: Legacy Unix format
+- **COM**: DOS executable format
+- **MZ**: DOS executable format
+- **32-bit ELF**: Only 64-bit ELF supported
+- **Custom binary formats**: No support for custom formats
+
+### Examples
+
+#### Shebang Script
+```bash
+#!/bin/Shell
+echo "Hello from SerenityOS!"
+```
+
+#### ELF Executable
+```cpp
+// Compile with: g++ -o hello hello.cpp
+#include <stdio.h>
+int main() {
+    printf("Hello, World!\n");
+    return 0;
+}
+```
+
+### Key Features
+- **64-bit only**: No 32-bit support
+- **Little-endian**: No big-endian support
+- **Dynamic linking**: Full shared library support
+- **Security**: ASLR and stack protection
+- **Scripting**: Shebang script support
+- **Validation**: Comprehensive ELF validation
+
+---
+
+## C++ Compilation Process
+
+### Overview
+SerenityOS compiles C++ code into ELF executables using a **cross-compilation toolchain** and **CMake build system**:
+
+### Toolchain
+
+#### Compilers
+- **GCC 15.2.0**: Primary compiler
+- **Clang 21.1.0**: Alternative compiler
+- **Target**: x86_64, aarch64, riscv64
+- **Linker**: LLD (preferred), mold, or GNU ld
+
+#### Compiler Flags
+```cmake
+# Common flags for all targets
+set(CMAKE_CXX_STANDARD 23)
+add_compile_options(-Wall -Wextra -Werror)
+add_compile_options(-fno-exceptions -fno-rtti)
+add_compile_options(-fstack-protector-strong)
+add_compile_options(-g1)  # Minimal debug info
+
+# Architecture-specific flags
+if("${SERENITY_ARCH}" STREQUAL "riscv64")
+    add_compile_options(-mstrict-align)
+endif()
+```
+
+### Build System
+
+#### CMake Configuration
+- **Kernel**: `Kernel/CMakeLists.txt` (O2 optimization, custom linker script)
+- **Userland**: `Userland/CMakeLists.txt` (O2 optimization, LibC linking)
+- **Libraries**: `serenity_libc()` function for shared libraries
+- **Applications**: `serenity_app()` function for executables
+
+#### Build Process
+```cmake
+# From Meta/CMake/utils.cmake
+function(serenity_libc target_name fs_name)
+    serenity_install_headers("")
+    serenity_install_sources()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -nostdlib -fpic -ftls-model=initial-exec")
+    add_library(${target_name} SHARED ${SOURCES})
+    install(TARGETS ${target_name} DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    set_target_properties(${target_name} PROPERTIES OUTPUT_NAME ${fs_name})
+    # Avoid creating a dependency cycle between system libraries and the C++ standard library. This is necessary
+    # to ensure that initialization functions will be called in the right order (libc++ must come after LibPthread).
+    target_link_options(${target_name} PRIVATE -static-libstdc++)
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang$" AND ENABLE_USERSPACE_COVERAGE_COLLECTION)
+       target_link_libraries(${target_name} PRIVATE clang_rt.profile)
+    endif()
+    target_link_directories(LibC PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+    serenity_generated_sources(${target_name})
+endfunction()
+```
+
+### Compilation Flow
+
+#### 1. Preprocessing
+- **Includes**: Header file inclusion
+- **Macros**: Macro expansion
+- **Conditional compilation**: `#ifdef` directives
+
+#### 2. Compilation
+- **C++ to Assembly**: Source code compilation
+- **Optimization**: O2 optimization level
+- **Architecture-specific**: Target-specific code generation
+
+#### 3. Assembly
+- **Assembly to Object**: Object file generation
+- **Symbols**: Function and variable symbols
+- **Relocations**: Address relocations
+
+#### 4. Linking
+- **Object files**: Multiple object files
+- **Libraries**: Static and dynamic libraries
+- **ELF generation**: Final executable creation
+
+### Example: About Application
+
+#### Source Code
+```cpp
+// Userland/Applications/About/main.cpp
+ErrorOr<int> serenity_main(Main::Arguments arguments)
+{
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath unix"));
+    auto app = TRY(GUI::Application::create(arguments));
+
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath"));
+    TRY(Core::System::unveil("/res", "r"));
+    TRY(Core::System::unveil(nullptr, nullptr));
+
+    auto app_icon = TRY(GUI::Icon::try_create_default_icon("ladyball"sv));
+    GUI::AboutDialog::show("SerenityOS"_string, TRY(Core::Version::read_long_version_string()), app_icon.bitmap_for_size(32), nullptr, app_icon.bitmap_for_size(16));
+    return app->exec();
+}
+```
+
+#### CMakeLists.txt
+```cmake
+serenity_component(
+    About
+    REQUIRED
+    TARGETS About
+)
+
+set(SOURCES
+    main.cpp
+)
+
+execute_process(COMMAND "git rev-parse --short HEAD" OUTPUT_VARIABLE GIT_COMMIT)
+execute_process(COMMAND "git rev-parse --abbrev-ref HEAD" OUTPUT_VARIABLE GIT_BRANCH)
+execute_process(COMMAND "git diff-index --quiet HEAD -- && echo tracked || echo untracked" OUTPUT_VARIABLE GIT_CHANGES)
+
+add_definitions(-DGIT_COMMIT="${GIT_COMMIT}" -DGIT_BRANCH="${GIT_BRANCH}" -DGIT_CHANGES="${GIT_CHANGES}")
+
+serenity_app(About ICON ladyball)
+target_link_libraries(About PRIVATE LibCore LibGfx LibGUI LibMain)
+```
+
+### Compilation Steps
+
+#### 1. Preprocessing
+```bash
+# 1. Preprocessing
+cpp -I/usr/include -I/workspace/Userland/Libraries main.cpp -o main.i
+```
+
+#### 2. Compilation
+```bash
+# 2. Compilation
+g++ -std=c++23 -Wall -Wextra -fno-exceptions -O2 -c main.i -o main.o
+```
+
+#### 3. Linking
+```bash
+# 3. Linking
+ld.lld -o About main.o -L/usr/lib -lc -lgui -lgfx -lcore
+```
+
+### ELF Output
+
+#### Executable Properties
+- **Type**: ET_EXEC or ET_DYN
+- **Architecture**: x86_64/aarch64/riscv64
+- **Entry point**: `_start` function (from crt0.cpp)
+- **Dynamic linking**: Via LibC
+- **Stack protection**: Enabled
+- **Debug info**: Minimal (-g1)
+
+#### Runtime Startup
+```cpp
+// Userland/Libraries/LibC/crt0.cpp
+NAKED void _start(int, char**, char**)
+{
+    asm("push $0\n" "jmp _entry@plt\n");
+}
+
+int _entry(int argc, char** argv)
+{
+    __begin_atexit_locking();
+    int status = main(argc, argv, environ);
+    exit(status);
+}
+```
+
+### Linking Process
+
+#### Static Linking
+- **Kernel components**: All kernel code statically linked
+- **Startup code**: crt0.o for program initialization
+- **System libraries**: LibC, LibCore, etc.
+
+#### Dynamic Linking
+- **Userland applications**: Most userland apps dynamically linked
+- **Library resolution**: Via dynamic loader
+- **Symbol resolution**: Runtime symbol resolution
+
+### Build Commands
+
+#### Full Build
+```bash
+# Build everything
+Meta/serenity.sh build
+
+# Build specific component
+cmake --build Build --target About
+
+# Cross-compile for different architecture
+SERENITY_ARCH=aarch64 Meta/serenity.sh build
+```
+
+#### Individual Components
+```bash
+# Build kernel only
+ninja Kernel
+
+# Build userland only
+ninja Userland
+
+# Build specific application
+ninja About
+```
+
+### Key Features
+- **Cross-compilation**: Build for different architectures
+- **Optimization**: O2 optimization for performance
+- **Security**: Stack protection and ASLR
+- **Debugging**: Minimal debug info (-g1)
+- **Linking**: Static and dynamic linking support
+- **Standards**: C++23 standard support
+
+---
+
+## Web Desktop Implementation
+
+### Overview
+This implementation replaces the traditional SerenityOS desktop with a **fullscreen web browser experience** that loads all drivers and services but skips the desktop environment.
+
+### What Was Implemented
+
+#### 1. WebDesktop Service
+- **Location**: `Userland/Services/WebDesktop/`
+- **Purpose**: Launches browser in fullscreen kiosk mode
+- **Features**: 
+  - Configurable target URL
+  - Kiosk mode (no navigation controls)
+  - Fullscreen by default
+
+```cpp
+// Userland/Services/WebDesktop/main.cpp
+ErrorOr<int> serenity_main(Main::Arguments arguments)
+{
+    ByteString target_url = "https://example.com";
+    bool kiosk_mode = true;
+    
+    Core::ArgsParser args_parser;
+    args_parser.add_option(target_url, "URL to load in fullscreen", "url", 'u', "url");
+    args_parser.add_option(kiosk_mode, "Enable kiosk mode (disable navigation)", "kiosk", 'k');
+    args_parser.parse(arguments);
+
+    TRY(Core::System::pledge("stdio recvfd sendfd rpath exec proc"));
+    
+    // Launch browser in fullscreen kiosk mode
+    Vector<ByteString> browser_args = {
+        "/bin/Browser",
+        "--url", target_url,
+        "--fullscreen",
+        "--kiosk"
+    };
+    
+    if (kiosk_mode) {
+        browser_args.append("--disable-navigation");
+    }
+    
+    TRY(Core::System::exec("/bin/Browser", browser_args, Core::System::SearchInPath::No));
+    return 0;
+}
+```
+
+#### 2. Modified SystemServer Configuration
+- **File**: `Base/etc/SystemServer.ini`
+- **Changes**:
+  - Added WebDesktop service for graphical mode
+  - Disabled WindowServer in graphical mode (moved to text mode only)
+  - Disabled Taskbar and Desktop in user mode
+
+```ini
+[WebDesktop]
+Executable=/bin/WebDesktop
+Arguments=--url https://example.com --kiosk
+User=window
+SystemModes=graphical
+KeepAlive=true
+Priority=high
+# Ensure webdesktop has a controlling TTY.
+StdIO=/dev/tty0
+
+[WindowServer]
+Socket=/tmp/portal/window,/tmp/portal/wm
+SocketPermissions=660
+Priority=high
+KeepAlive=true
+User=window
+# Ensure windowserver has a controlling TTY.
+StdIO=/dev/tty0
+SystemModes=text
+```
+
+#### 3. Enhanced Browser for Kiosk Mode
+- **Files**: `Userland/Applications/Browser/`
+- **New Features**:
+  - `--fullscreen` flag to start in fullscreen
+  - `--kiosk` flag for kiosk mode
+  - `--disable-navigation` flag to disable navigation controls
+  - Hides all UI elements (toolbar, status bar, tab bar) in kiosk mode
+  - Prevents window resizing in kiosk mode
+
+```cpp
+// Userland/Applications/Browser/main.cpp
+Vector<ByteString> specified_urls;
+bool new_window = false;
+bool fullscreen_mode = false;
+bool kiosk_mode = false;
+bool disable_navigation = false;
+
+Core::ArgsParser args_parser;
+args_parser.add_positional_argument(specified_urls, "URLs to open", "url", Core::ArgsParser::Required::No);
+args_parser.add_option(Browser::g_webdriver_content_ipc_path, "Path to WebDriver IPC for WebContent", "webdriver-content-path", 0, "path", Core::ArgsParser::OptionHideMode::CommandLineAndMarkdown);
+args_parser.add_option(new_window, "Force opening in a new window", "new-window", 'n');
+args_parser.add_option(fullscreen_mode, "Start in fullscreen mode", "fullscreen", 'f');
+args_parser.add_option(kiosk_mode, "Start in kiosk mode", "kiosk", 'k');
+args_parser.add_option(disable_navigation, "Disable navigation controls", "disable-navigation");
+
+args_parser.parse(arguments);
+
+// Set global flags for kiosk mode
+if (fullscreen_mode || kiosk_mode) {
+    Browser::g_start_in_fullscreen = true;
+}
+if (kiosk_mode) {
+    Browser::g_kiosk_mode = true;
+}
+if (disable_navigation) {
+    Browser::g_disable_navigation = true;
+}
+```
+
+#### 4. Modified LoginServer
+- **File**: `Userland/Services/LoginServer/main.cpp`
+- **Changes**:
+  - Checks for `WEB_DESKTOP_MODE` environment variable
+  - Launches WebDesktop instead of SystemServer when enabled
+  - Configurable via `WEB_DESKTOP_URL` environment variable
+
+```cpp
+// Userland/Services/LoginServer/main.cpp
+static void child_process(Core::Account const& account)
+{
+    pid_t rc = setsid();
+    if (rc == -1) {
+        dbgln("failed to setsid: {}", strerror(errno));
+        exit(1);
+    }
+    auto result = Core::SessionManagement::create_session_temporary_directory_if_needed(account.uid(), account.gid());
+    if (result.is_error()) {
+        dbgln("Failed to create temporary directory for session: {}", result.error());
+        exit(1);
+    }
+
+    if (auto const result = account.login(); result.is_error()) {
+        dbgln("failed to switch users: {}", result.error());
+        exit(1);
+    }
+
+    setenv("HOME", account.home_directory().characters(), true);
+    dbgln("login with sid={}", rc);
+
+    // Check if we should launch WebDesktop instead of traditional desktop
+    if (getenv("WEB_DESKTOP_MODE")) {
+        execlp("/bin/WebDesktop", "WebDesktop", "--url", getenv("WEB_DESKTOP_URL") ?: "https://example.com", "--kiosk", nullptr);
+    } else {
+        execlp("/bin/SystemServer", "SystemServer", "--user", nullptr);
+    }
+    dbgln("failed to exec WebDesktop or SystemServer: {}", strerror(errno));
+    exit(127);
+}
+```
+
+### Configuration
+
+#### Environment Variables
+- `WEB_DESKTOP_MODE=1`: Enables web desktop mode
+- `WEB_DESKTOP_URL=https://your-app.com`: Sets the target URL
+
+#### SystemServer Configuration
+```ini
+[WebDesktop]
+Executable=/bin/WebDesktop
+Arguments=--url https://example.com --kiosk
+User=window
+SystemModes=graphical
+KeepAlive=true
+Priority=high
+StdIO=/dev/tty0
+```
+
+### How It Works
+
+#### 1. Boot Process
+- **Kernel loads** → **SystemServer starts** → **LoginServer launches**
+- **LoginServer checks** for `WEB_DESKTOP_MODE` environment variable
+- **If enabled**, launches WebDesktop instead of traditional desktop
+
+#### 2. WebDesktop Service
+- **Launches Browser** with fullscreen and kiosk flags
+- **Browser hides** all UI elements and loads the specified URL
+- **User sees** only the web content in fullscreen
+
+#### 3. Kiosk Mode
+- **No navigation controls** (back, forward, home, reload)
+- **No toolbar, status bar, or tab bar**
+- **No window resizing** or moving
+- **Fullscreen only**
+
+### Benefits
+
+- **No Traditional Desktop**: Users see only the web application
+- **Kiosk Mode**: Prevents users from navigating away or accessing system
+- **Configurable**: Easy to change target URL via environment variables
+- **All Drivers Load**: Graphics, network, and other drivers still initialize normally
+- **Fullscreen Experience**: Web app appears as the entire desktop
+
+### Usage
+
+#### To Enable Web Desktop Mode
+1. Set environment variables in `Base/etc/SystemServer.ini`:
+   ```ini
+   [LoginServer]
+   Environment=WEB_DESKTOP_MODE=1 WEB_DESKTOP_URL=https://your-app.com
+   ```
+
+2. Build and run SerenityOS:
+   ```bash
+   Meta/serenity.sh build
+   Meta/serenity.sh run
+   ```
+
+#### To Disable Web Desktop Mode
+1. Remove or comment out the `Environment` line in `Base/etc/SystemServer.ini`
+2. Rebuild and run
+
+### Customization
+
+#### Change Target URL
+Modify the `WEB_DESKTOP_URL` environment variable in `Base/etc/SystemServer.ini`
+
+#### Disable Kiosk Mode
+Remove the `--kiosk` flag from WebDesktop arguments in `Base/etc/SystemServer.ini`
+
+#### Add More Browser Options
+Modify the `Arguments` line in the WebDesktop service configuration
+
+### Files Modified
+
+1. `Userland/Services/WebDesktop/main.cpp` - New WebDesktop service
+2. `Userland/Services/WebDesktop/CMakeLists.txt` - Build configuration
+3. `Userland/Services/CMakeLists.txt` - Added WebDesktop to build
+4. `Base/etc/SystemServer.ini` - System service configuration
+5. `Base/etc/SystemServerUser.ini` - User service configuration
+6. `Userland/Applications/Browser/main.cpp` - Added kiosk mode flags
+7. `Userland/Applications/Browser/Browser.h` - Added global kiosk variables
+8. `Userland/Applications/Browser/BrowserWindow.cpp` - Kiosk mode UI handling
+9. `Userland/Applications/Browser/Tab.cpp` - Hide UI elements in kiosk mode
+10. `Userland/Services/LoginServer/main.cpp` - WebDesktop launch logic
+
+### Testing
+
+To test the implementation:
+
+1. Build the system:
+   ```bash
+   Meta/serenity.sh build
+   ```
+
+2. Run in QEMU:
+   ```bash
+   Meta/serenity.sh run
+   ```
+
+3. The system should boot directly to a fullscreen web browser showing the configured URL
+
+4. To test with a different URL, modify `WEB_DESKTOP_URL` in the configuration and rebuild
+
+### Troubleshooting
+
+- **Browser doesn't start**: Check that WebDesktop service is properly configured
+- **URL doesn't load**: Verify network connectivity and URL validity
+- **UI elements still visible**: Ensure kiosk mode flags are properly set
+- **System hangs**: Check that all required services are still running
+
+### Future Enhancements
+
+- Add configuration file for WebDesktop settings
+- Support for multiple URLs or web apps
+- Add keyboard shortcuts for system access
+- Implement session management
+- Add logging and monitoring capabilities
+
+### Key Features
+- **No Traditional Desktop**: Users see only the web application
+- **Kiosk Mode**: Prevents users from navigating away or accessing system
+- **Configurable**: Easy to change target URL via environment variables
+- **All Drivers Load**: Graphics, network, and other drivers still initialize normally
+- **Fullscreen Experience**: Web app appears as the entire desktop
+- **Easy Toggle**: Enable/disable via configuration
+
+---
+
+## Summary
+
+### Key Findings
+
+1. **Programming Languages**: SerenityOS primarily uses C++ with additional support for Jakt, JavaScript, Assembly, Python, and Shell scripts.
+
+2. **Control Flow**: Traditional Unix-like architecture with modern features including preemptive multitasking, memory protection, and interrupt-driven design.
+
+3. **GUI System**: Custom WindowServer-based GUI with compositor, window manager, and hardware-accelerated graphics.
+
+4. **.NET Core Support**: Technically possible but extremely challenging, requiring 3-5 years of development effort.
+
+5. **Bare Metal Installation**: Supported on x86_64, aarch64, and riscv64 with multiple bootloader options.
+
+6. **Driver Architecture**: Not generic, with limited hardware support focused on specific vendors and protocols.
+
+7. **Executable Formats**: Supports ELF (64-bit) and shebang scripts with comprehensive validation and security features.
+
+8. **C++ Compilation**: Cross-compilation toolchain with CMake build system, supporting multiple architectures and optimization levels.
+
+9. **Web Desktop**: Complete implementation for replacing traditional desktop with fullscreen web browser experience.
+
+### Recommendations
+
+1. **For Developers**: Use C++ or Jakt for SerenityOS development, avoid .NET Core integration.
+
+2. **For Users**: Check hardware compatibility before installation, use supported hardware (Intel, Realtek, VirtIO).
+
+3. **For Contributors**: Focus on adding drivers for needed hardware, following existing driver patterns.
+
+4. **For Enthusiasts**: SerenityOS is best for learning operating system concepts and experimenting with modern Unix-like systems.
+
+5. **For Web Desktop**: Use the implemented WebDesktop service for kiosk mode applications and web-based interfaces.
+
+### Conclusion
+
+SerenityOS is a well-designed, modern Unix-like operating system with:
+- **Strong technical foundation**: Modern C++ architecture, good design principles
+- **Limited hardware support**: Specific drivers for major vendors only
+- **Educational value**: Excellent for learning OS concepts
+- **Development potential**: Good foundation for further development
+- **Web desktop capability**: Full implementation for web-based interfaces
 
 **Best suited for**: Developers, students, and enthusiasts interested in operating system development and experimentation with compatible hardware.

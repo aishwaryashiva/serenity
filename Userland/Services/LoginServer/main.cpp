@@ -39,8 +39,13 @@ static void child_process(Core::Account const& account)
     setenv("HOME", account.home_directory().characters(), true);
     dbgln("login with sid={}", rc);
 
-    execlp("/bin/SystemServer", "SystemServer", "--user", nullptr);
-    dbgln("failed to exec SystemServer --user: {}", strerror(errno));
+    // Check if we should launch WebDesktop instead of traditional desktop
+    if (getenv("WEB_DESKTOP_MODE")) {
+        execlp("/bin/WebDesktop", "WebDesktop", "--url", getenv("WEB_DESKTOP_URL") ?: "https://example.com", "--kiosk", nullptr);
+    } else {
+        execlp("/bin/SystemServer", "SystemServer", "--user", nullptr);
+    }
+    dbgln("failed to exec WebDesktop or SystemServer: {}", strerror(errno));
     exit(127);
 }
 
