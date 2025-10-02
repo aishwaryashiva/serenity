@@ -17,6 +17,7 @@
 #include "History/HistoryWidget.h"
 #include "InspectorWidget.h"
 #include "StorageWidget.h"
+#include <AK/JsonParser.h>
 #include <AK/StringBuilder.h>
 #include <Applications/Browser/TabGML.h>
 #include <Applications/Browser/URLBox.h>
@@ -130,6 +131,15 @@ Tab::Tab(BrowserWindow& window)
     m_web_content_view->set_proxy_mappings(g_proxies, g_proxy_mappings);
     if (!g_webdriver_content_ipc_path.is_empty())
         enable_webdriver_mode();
+    
+    // Initialize WebDesktop message client for kiosk mode
+    if (Browser::g_kiosk_mode) {
+        m_webdesktop_client = make<WebDesktop::WebDesktopMessageClient>();
+        auto result = m_webdesktop_client->connect();
+        if (result.is_error()) {
+            dbgln("Failed to connect to WebDesktop message handler: {}", result.error());
+        }
+    }
 
     auto& go_back_button = toolbar.add_action(window.go_back_action());
     go_back_button.on_context_menu_request = [&](auto&) {
@@ -1064,6 +1074,36 @@ void Tab::enable_webdriver_mode()
     m_web_content_view->connect_to_webdriver(Browser::g_webdriver_content_ipc_path);
     auto& webdriver_banner = *find_descendant_of_type_named<GUI::Widget>("webdriver_banner");
     webdriver_banner.set_visible(true);
+}
+
+void Tab::handle_webdesktop_message(ByteString const& message)
+{
+    if (!m_webdesktop_client) {
+        return;
+    }
+    
+    // Parse the message and forward to WebDesktop handler
+    auto json_result = JsonParser(message).parse();
+    if (json_result.is_error()) {
+        dbgln("Failed to parse WebDesktop message: {}", json_result.error());
+        return;
+    }
+    
+    auto json_value = json_result.release_value();
+    if (!json_value.is_object()) {
+        dbgln("WebDesktop message is not a JSON object");
+        return;
+    }
+    
+    auto json_object = json_value.as_object();
+    auto command = json_object.get_byte_string("command"sv).value_or(""sv);
+    auto data = json_object.get_object("data"sv).value_or(JsonObject {});
+    
+    // Forward the message to WebDesktop handler
+    auto result = m_webdesktop_client->send_message(command, data, url());
+    if (result.is_error()) {
+        dbgln("Failed to send WebDesktop message: {}", result.error());
+    }
 }
 
 }
