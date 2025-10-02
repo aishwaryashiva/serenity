@@ -15,6 +15,7 @@
 #include <LibCore/LocalSocket.h>
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
+#include "NetworkDetector.h"
 
 namespace WebDesktop {
 
@@ -31,6 +32,13 @@ enum class SystemCommand {
     BrightnessUp,
     BrightnessDown,
     Screenshot,
+    ConfigureNetwork,
+    ResetNetwork,
+    RestartNetwork,
+    OpenLocalApp,
+    OpenSystemInfo,
+    OpenLogs,
+    ContactSupport,
     Unknown
 };
 
@@ -68,10 +76,22 @@ private:
     ErrorOr<void> mute_volume();
     ErrorOr<void> adjust_brightness(bool increase);
     ErrorOr<void> take_screenshot();
+    
+    // Network management commands
+    ErrorOr<void> configure_network(JsonObject const& data);
+    ErrorOr<void> reset_network_settings();
+    ErrorOr<void> restart_network_service();
+    ErrorOr<void> open_local_app(JsonObject const& data);
+    ErrorOr<void> open_system_info();
+    ErrorOr<void> open_logs();
+    ErrorOr<void> contact_support();
 
     NonnullOwnPtr<Core::LocalServer> m_server;
     Core::EventLoop m_event_loop;
     bool m_running { false };
+    
+    // Network detection
+    OwnPtr<NetworkDetector> m_network_detector;
     
     // Security configuration
     Vector<ByteString> m_allowed_origins;

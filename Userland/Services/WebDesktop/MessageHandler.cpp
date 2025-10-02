@@ -29,6 +29,13 @@ MessageHandler::MessageHandler()
     if (config_result.is_error()) {
         dbgln("Failed to load WebDesktop config, using defaults: {}", config_result.error());
     }
+    
+    // Initialize network detector
+    m_network_detector = make<NetworkDetector>();
+    auto network_result = m_network_detector->start();
+    if (network_result.is_error()) {
+        dbgln("Failed to start network detector: {}", network_result.error());
+    }
 }
 
 MessageHandler::~MessageHandler()
@@ -51,6 +58,9 @@ void MessageHandler::stop()
     m_running = false;
     if (m_server) {
         m_server->close();
+    }
+    if (m_network_detector) {
+        m_network_detector->stop();
     }
 }
 
@@ -153,6 +163,13 @@ SystemCommand MessageHandler::parse_command(ByteString const& command)
     if (command == "brightnessUp") return SystemCommand::BrightnessUp;
     if (command == "brightnessDown") return SystemCommand::BrightnessDown;
     if (command == "screenshot") return SystemCommand::Screenshot;
+    if (command == "configureNetwork") return SystemCommand::ConfigureNetwork;
+    if (command == "resetNetwork") return SystemCommand::ResetNetwork;
+    if (command == "restartNetwork") return SystemCommand::RestartNetwork;
+    if (command == "openLocalApp") return SystemCommand::OpenLocalApp;
+    if (command == "openSystemInfo") return SystemCommand::OpenSystemInfo;
+    if (command == "openLogs") return SystemCommand::OpenLogs;
+    if (command == "contactSupport") return SystemCommand::ContactSupport;
     
     return SystemCommand::Unknown;
 }
@@ -211,6 +228,20 @@ ErrorOr<void> MessageHandler::execute_system_command(SystemCommand command, Json
         return adjust_brightness(false);
     case SystemCommand::Screenshot:
         return take_screenshot();
+    case SystemCommand::ConfigureNetwork:
+        return configure_network(data);
+    case SystemCommand::ResetNetwork:
+        return reset_network_settings();
+    case SystemCommand::RestartNetwork:
+        return restart_network_service();
+    case SystemCommand::OpenLocalApp:
+        return open_local_app(data);
+    case SystemCommand::OpenSystemInfo:
+        return open_system_info();
+    case SystemCommand::OpenLogs:
+        return open_logs();
+    case SystemCommand::ContactSupport:
+        return contact_support();
     default:
         return Error::from_string_literal("Unknown system command");
     }
@@ -374,6 +405,88 @@ ErrorOr<void> MessageHandler::take_screenshot()
         // Fallback to scrot
         TRY(Core::System::exec("/usr/bin/scrot", Vector<ByteString> { filename }, Core::System::SearchInPath::No));
     }
+    
+    return {};
+}
+
+ErrorOr<void> MessageHandler::configure_network(JsonObject const& data)
+{
+    dbgln("Configuring network settings");
+    
+    auto interface = data.get_byte_string("interface"sv).value_or("eth0"sv);
+    auto ip_address = data.get_byte_string("ipAddress"sv).value_or(""sv);
+    auto subnet_mask = data.get_byte_string("subnetMask"sv).value_or(""sv);
+    auto gateway = data.get_byte_string("gateway"sv).value_or(""sv);
+    auto dns_servers = data.get_byte_string("dnsServers"sv).value_or(""sv);
+    
+    if (m_network_detector) {
+        return m_network_detector->configure_network(interface, ip_address, subnet_mask, gateway, dns_servers);
+    }
+    
+    return Error::from_string_literal("Network detector not available");
+}
+
+ErrorOr<void> MessageHandler::reset_network_settings()
+{
+    dbgln("Resetting network settings to defaults");
+    
+    if (m_network_detector) {
+        return m_network_detector->reset_network_settings();
+    }
+    
+    return Error::from_string_literal("Network detector not available");
+}
+
+ErrorOr<void> MessageHandler::restart_network_service()
+{
+    dbgln("Restarting network service");
+    
+    if (m_network_detector) {
+        return m_network_detector->restart_network_service();
+    }
+    
+    return Error::from_string_literal("Network detector not available");
+}
+
+ErrorOr<void> MessageHandler::open_local_app(JsonObject const& data)
+{
+    dbgln("Opening local application");
+    
+    auto app_name = data.get_byte_string("app"sv).value_or("SystemMonitor"sv);
+    
+    // Launch local application
+    Vector<ByteString> args = { app_name };
+    TRY(Core::System::exec(ByteString::formatted("/bin/{}", app_name), args, Core::System::SearchInPath::No));
+    
+    return {};
+}
+
+ErrorOr<void> MessageHandler::open_system_info()
+{
+    dbgln("Opening system information");
+    
+    // Launch system information application
+    TRY(Core::System::exec("/bin/SystemMonitor", Vector<ByteString> {}, Core::System::SearchInPath::No));
+    
+    return {};
+}
+
+ErrorOr<void> MessageHandler::open_logs()
+{
+    dbgln("Opening system logs");
+    
+    // Launch log viewer
+    TRY(Core::System::exec("/bin/LogViewer", Vector<ByteString> {}, Core::System::SearchInPath::No));
+    
+    return {};
+}
+
+ErrorOr<void> MessageHandler::contact_support()
+{
+    dbgln("Opening support contact");
+    
+    // Launch support application or open support URL
+    TRY(Core::System::exec("/bin/Support", Vector<ByteString> {}, Core::System::SearchInPath::No));
     
     return {};
 }
